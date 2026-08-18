@@ -149,6 +149,16 @@ class PaymentTests: XCTestCase {
 }
 ```
 
+## 📤 Upload batching
+
+By default, results are uploaded after every finished test rather than buffered until the end of the run. This limits how much data can be lost if the test process is torn down mid-suite (for example, by the test runner restarting after a crash) to at most one test's result.
+
+If you'd rather batch more tests per upload request, set `BUILDKITE_ANALYTICS_BATCH_SIZE` to the number of traces to buffer before uploading:
+
+```bash
+export BUILDKITE_ANALYTICS_BATCH_SIZE=50
+```
+
 ## 🔍 Debugging
 
 To enable debugging output, set the `BUILDKITE_ANALYTICS_DEBUG_ENABLED` environment variable to `true`. This also needs

@@ -30,7 +30,17 @@ public struct TestCollector {
       let baseURL = environment.analyticsBaseURL ?? URL(string: Self.baseURL)!
       let api = ApiClient.live(apiToken: apiToken, baseURL: baseURL)
       let runEnvironment = environment.runEnvironment()
-      uploader = .live(api: api, runEnvironment: runEnvironment, tags: tags.isEmpty ? nil : tags, logger: logger)
+      // Upload after every test by default (rather than buffering until process exit) so a mid-suite
+      // crash loses at most one test's result. Override via BUILDKITE_ANALYTICS_BATCH_SIZE if larger,
+      // less frequent uploads are preferred.
+      let batchSize = max(1, environment.analyticsBatchSize ?? 1)
+      uploader = .live(
+        api: api,
+        runEnvironment: runEnvironment,
+        tags: tags.isEmpty ? nil : tags,
+        logger: logger,
+        batchSize: batchSize
+      )
     } else {
       logger?.info("TestCollector unable to locate API key. Test results will not be uploaded.")
       uploader = nil
@@ -82,5 +92,5 @@ public struct TestCollector {
 
   public static let baseURL = "https://analytics-api.buildkite.com/v1/"
   static let name = "test-collector-swift"
-  static let version = "0.6.0"
+  static let version = "0.6.1"
 }

@@ -109,6 +109,45 @@ final class UploadClientTests: XCTestCase {
     XCTAssertEqual(testResults[2].data.map(\.id), (10001...12345).map { "\($0)" })
   }
 
+  func testUploadsAfterEveryTraceWhenBatchSizeIsOne() throws {
+    let testResults = LockIsolated([TestResults]())
+
+    let api = ApiClient { route in
+      if case let .upload(results) = route {
+        testResults.withValue { $0.append(results) }
+      }
+      return (Data(), .stub())
+    }
+
+    let uploadTasks = DispatchGroup()
+
+    let uploadClient = UploadClient.live(
+      api: api,
+      runEnvironment: EnvironmentValues().runEnvironment(),
+      batchSize: 1,
+      group: uploadTasks
+    )
+
+    // Record many traces back-to-back; each one should trigger its own upload immediately, rather than
+    // waiting for a full batch or for waitForUploads() to be called.
+    for id in 1...50 {
+      uploadClient.record(trace: .mock(id: "\(id)"))
+    }
+
+    XCTAssertEqual(uploadTasks.wait(timeout: 0.5), .success)
+    XCTAssertEqual(testResults.count, 50)
+
+    // waitForUploads() should have nothing left to flush, but must still correctly wait for every one of
+    // the many concurrent upload tasks already in flight.
+    uploadClient.waitForUploads()
+
+    XCTAssertEqual(testResults.count, 50)
+    XCTAssertEqual(
+      Set(testResults.value.flatMap { $0.data.map(\.id) }),
+      Set((1...50).map { "\($0)" })
+    )
+  }
+
   func testUploadIncludesTags() throws {
     let testResults = LockIsolated([TestResults]())
 

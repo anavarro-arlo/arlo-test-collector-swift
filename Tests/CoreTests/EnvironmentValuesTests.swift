@@ -74,4 +74,19 @@ final class EnvironmentValuesTests: XCTestCase {
     let environment = EnvironmentValues(values: [:])
     XCTAssertNil(environment.analyticsTags)
   }
+
+  func testAnalyticsBatchSize() {
+    let environment = EnvironmentValues(values: ["BUILDKITE_ANALYTICS_BATCH_SIZE": "10"])
+    XCTAssertEqual(environment.analyticsBatchSize, 10)
+  }
+
+  func testAnalyticsBatchSizeNotSet() {
+    let environment = EnvironmentValues(values: [:])
+    XCTAssertNil(environment.analyticsBatchSize)
+  }
+
+  func testAnalyticsBatchSizeInvalidValue() {
+    let environment = EnvironmentValues(values: ["BUILDKITE_ANALYTICS_BATCH_SIZE": "not-a-number"])
+    XCTAssertNil(environment.analyticsBatchSize)
+  }
 }
