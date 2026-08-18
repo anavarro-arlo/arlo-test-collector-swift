@@ -149,15 +149,9 @@ class PaymentTests: XCTestCase {
 }
 ```
 
-## 📤 Upload batching
+## 💾 Crash resilience
 
-By default, results are uploaded after every finished test rather than buffered until the end of the run. This limits how much data can be lost if the test process is torn down mid-suite (for example, by the test runner restarting after a crash) to at most one test's result.
-
-If you'd rather batch more tests per upload request, set `BUILDKITE_ANALYTICS_BATCH_SIZE` to the number of traces to buffer before uploading:
-
-```bash
-export BUILDKITE_ANALYTICS_BATCH_SIZE=50
-```
+Test results are written to a local, temporary file as each test finishes, in addition to being held in memory. If the test process is torn down mid-suite and relaunched (for example, by `xcodebuild` after certain failures), the relaunched process appends to the same file rather than starting from scratch, so at most the single test that was executing when the process died is lost. Results are still uploaded exactly once, at the end of the run — this only protects against losing already-finished results, it doesn't change how or how often uploads happen.
 
 ## 🔍 Debugging
 

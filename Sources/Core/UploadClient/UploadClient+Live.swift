@@ -12,24 +12,25 @@ extension UploadClient {
   ///   - api: An API client.
   ///   - logger: A logger.
   ///   - runEnvironment: The run environment to accompany uploaded traces.
-  ///   - batchSize: The maximum number of traces per upload.
   ///   - group: A dispatch group to associate with upload tasks.
+  ///   - fileController: Persists traces locally so they survive the test process being torn down before
+  ///     `waitForUploads()` runs.
   /// - Returns: A upload client that uses an api client.
   static func live(
     api: ApiClient,
     runEnvironment: RunEnvironment,
     tags: [String: String]? = nil,
     logger: Logger? = nil,
-    batchSize: Int = maximumBatchSize,
-    group: DispatchGroup = DispatchGroup()
+    group: DispatchGroup = DispatchGroup(),
+    fileController: FileController = FileController()
   ) -> UploadClient {
     let client = LiveClient(
       api: api,
-      batchSize: batchSize,
       logger: logger,
       runEnvironment: runEnvironment,
       tags: tags,
-      taskGroup: group
+      taskGroup: group,
+      fileController: fileController
     )
 
     return UploadClient(
@@ -40,21 +41,17 @@ extension UploadClient {
 
   private struct LiveClient {
     let api: ApiClient
-    let batchSize: Int
     let logger: Logger?
     let runEnvironment: RunEnvironment
     let tags: [String: String]?
     let taskGroup: DispatchGroup
-
-    private let traces = LockIsolated([Trace]())
+    let fileController: FileController
 
     func record(trace: Trace) {
-      self.traces.withValue { traces in
-        traces.append(trace)
-        guard traces.count >= self.batchSize else { return }
-        self.upload(traces: traces)
-        traces = []
-      }
+      // Persisted immediately so at most the currently in-flight test's result is lost if the process
+      // is torn down before waitForUploads() runs. A process relaunched mid-suite (e.g. by xcodebuild)
+      // appends to this same file rather than starting from an empty in-memory buffer.
+      self.fileController.append(trace)
     }
 
     private func upload(traces: [Trace]) {
@@ -63,7 +60,14 @@ extension UploadClient {
       Task {
         defer { self.taskGroup.leave() }
         let testData = TestResults.json(runEnv: runEnvironment, tags: tags, data: traces)
-        try await self.upload(testData: testData)
+        do {
+          try await self.upload(testData: testData)
+          // Only clear the durable log once the upload actually succeeds, so a failed upload doesn't
+          // lose data - the file is left in place rather than silently discarded.
+          self.fileController.deleteFile()
+        } catch {
+          // Already logged inside upload(testData:).
+        }
       }
     }
 
@@ -104,10 +108,11 @@ extension UploadClient {
     }
 
     func waitForUploads(timeout: TimeInterval) {
-      self.traces.withValue { traces in
-        guard !traces.isEmpty else { return }
+      // Reads every trace recorded to the file, including any appended by a process that was torn down
+      // and relaunched earlier in this same run - not just the ones this process instance recorded.
+      let traces = self.fileController.readAll()
+      if !traces.isEmpty {
         self.upload(traces: traces)
-        traces = []
       }
       let result = self.taskGroup.wait(timeout: timeout)
       if result == .timedOut {
@@ -116,6 +121,3 @@ extension UploadClient {
     }
   }
 }
-
-// The maximum number of traces that can be sent per upload
-private let maximumBatchSize = 5000

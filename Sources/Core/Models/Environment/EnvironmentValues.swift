@@ -24,10 +24,6 @@ struct EnvironmentValues {
     self.string(for: key).map { NSString(string: $0).boolValue }
   }
 
-  func int(for key: String) -> Int? {
-    self.string(for: key).flatMap(Int.init)
-  }
-
   func dictionary(for key: String) -> [String: AnyCodable]? {
     guard let string = self.string(for: key) else { return nil }
     guard
@@ -89,12 +85,6 @@ extension EnvironmentValues {
 
   var isAnalyticsDebugEnabled: Bool { self.bool(for: "BUILDKITE_ANALYTICS_DEBUG_ENABLED") ?? false }
   var analyticsTags: [String: String]? { self.stringDictionary(for: "BUILDKITE_ANALYTICS_TAGS") }
-
-  /// The maximum number of traces to buffer in memory before uploading them.
-  ///
-  /// Smaller values shrink the amount of test data that can be lost if the test process is torn down
-  /// mid-suite (e.g. by the test runner) at the cost of more, smaller upload requests.
-  var analyticsBatchSize: Int? { self.int(for: "BUILDKITE_ANALYTICS_BATCH_SIZE") }
 
   var analyticsKey: String? { self.string(for: "BUILDKITE_ANALYTICS_KEY") }
   var analyticsUrl: String? { self.string(for: "BUILDKITE_ANALYTICS_URL") }

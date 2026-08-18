@@ -35,7 +35,7 @@ struct Trace: Equatable {
   var tags: [String: String]?
 }
 
-extension Trace: Encodable {
+extension Trace: Codable {
   enum CodingKeys: String, CodingKey {
     case id
     case scope

@@ -1,6 +1,6 @@
 extension Trace {
   /// A type containing details related to a test failure that occurred during a trace.
-  struct FailureExpanded: Encodable, Equatable {
+  struct FailureExpanded: Codable, Equatable {
     /// An array of strings containing a line separated failure message or additional details.
     var expanded: [String]
 

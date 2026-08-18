@@ -23,7 +23,7 @@ extension Trace {
   }
 }
 
-extension Trace.Span: Encodable {
+extension Trace.Span: Codable {
   enum CodingKeys: String, CodingKey {
     case section
     case startAt = "start_at"

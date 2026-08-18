@@ -10,7 +10,8 @@ final class UploadClientTests: XCTestCase {
     let uploadCompleted = self.expectation(description: "upload completed")
     let uploadClient = UploadClient.live(
       api: .fulfill(uploadCompleted, after: 0.5),
-      runEnvironment: EnvironmentValues().runEnvironment()
+      runEnvironment: EnvironmentValues().runEnvironment(),
+      fileController: .temporary()
     )
 
     uploadClient.record(trace: .mock())
@@ -24,7 +25,8 @@ final class UploadClientTests: XCTestCase {
     uploadCompleted.isInverted = true
     let uploadClient = UploadClient.live(
       api: .fulfill(uploadCompleted, after: 0.5),
-      runEnvironment: EnvironmentValues().runEnvironment()
+      runEnvironment: EnvironmentValues().runEnvironment(),
+      fileController: .temporary()
     )
 
     uploadClient.record(trace: .mock())
@@ -43,7 +45,8 @@ final class UploadClientTests: XCTestCase {
     let uploadClient = UploadClient.live(
       api: api,
       runEnvironment: EnvironmentValues().runEnvironment(),
-      logger: logger
+      logger: logger,
+      fileController: .temporary()
     )
 
     uploadClient.record(trace: .mock())
@@ -56,7 +59,28 @@ final class UploadClientTests: XCTestCase {
     XCTAssertEqual(errorMessage.value, "[BuildkiteTestCollector] error: Unexpected HTTP 500 \(statusName), Something went wrong")
   }
 
-  func testUploadsInBatchesOf5000ByDefault() throws {
+  func testNoUploadIsAttemptedWhenNoTracesWereRecorded() throws {
+    let testResults = LockIsolated([TestResults]())
+
+    let api = ApiClient { route in
+      if case let .upload(results) = route {
+        testResults.withValue { $0.append(results) }
+      }
+      return (Data(), .stub())
+    }
+
+    let uploadClient = UploadClient.live(
+      api: api,
+      runEnvironment: EnvironmentValues().runEnvironment(),
+      fileController: .temporary()
+    )
+
+    uploadClient.waitForUploads()
+
+    XCTAssertEqual(testResults.count, 0)
+  }
+
+  func testRecordingManyTracesUploadsThemAllInOneRequestAtTheEndOfTheRun() throws {
     let testResults = LockIsolated([TestResults]())
 
     let api = ApiClient { route in
@@ -71,45 +95,25 @@ final class UploadClientTests: XCTestCase {
     let uploadClient = UploadClient.live(
       api: api,
       runEnvironment: EnvironmentValues().runEnvironment(),
-      group: uploadTasks
+      group: uploadTasks,
+      fileController: .temporary()
     )
 
-    // Record 4999 traces
-    for id in 1...4999 {
+    for id in 1...300 {
       uploadClient.record(trace: .mock(id: "\(id)"))
     }
 
-    // Wait to make sure no uploads were started
+    // Nothing should be uploaded until waitForUploads() runs, no matter how many traces were recorded.
     XCTAssertEqual(uploadTasks.wait(timeout: 0.1), .success)
     XCTAssertEqual(testResults.count, 0)
 
-    // Record one more trace to trigger the first batch of 5000
-    uploadClient.record(trace: .mock(id: "5000"))
-
-    // Wait for upload to complete
-    XCTAssertEqual(uploadTasks.wait(timeout: 0.1), .success)
-    XCTAssertEqual(testResults.count, 1)
-
-    // Send the remaining traces
-    for id in 5001...12345 {
-      let trace = Trace(id: "\(id)", history: .init(section: "section"))
-      uploadClient.record(trace: trace)
-    }
-
-    // A second batch will be sent for ids 5001...10000
-    XCTAssertEqual(uploadTasks.wait(timeout: 0.1), .success)
-    XCTAssertEqual(testResults.count, 2)
-
-    // Uploads any remaining traces regardless of batch size
     uploadClient.waitForUploads()
 
-    XCTAssertEqual(testResults.count, 3)
-    XCTAssertEqual(testResults[0].data.map(\.id), (1...5000).map { "\($0)" })
-    XCTAssertEqual(testResults[1].data.map(\.id), (5001...10000).map { "\($0)" })
-    XCTAssertEqual(testResults[2].data.map(\.id), (10001...12345).map { "\($0)" })
+    XCTAssertEqual(testResults.count, 1)
+    XCTAssertEqual(testResults[0].data.map(\.id), (1...300).map { "\($0)" })
   }
 
-  func testUploadsAfterEveryTraceWhenBatchSizeIsOne() throws {
+  func testATornDownProcessDoesNotLosePreviouslyRecordedTraces() throws {
     let testResults = LockIsolated([TestResults]())
 
     let api = ApiClient { route in
@@ -119,33 +123,64 @@ final class UploadClientTests: XCTestCase {
       return (Data(), .stub())
     }
 
-    let uploadTasks = DispatchGroup()
+    // The same file a relaunched process would use to pick up where a crashed one left off.
+    let fileController = FileController.temporary()
+
+    // Simulates the process that recorded some traces and then was torn down before waitForUploads()
+    // ran - e.g. xcodebuild relaunching the Runner mid-suite.
+    let crashedProcessClient = UploadClient.live(
+      api: api,
+      runEnvironment: EnvironmentValues().runEnvironment(),
+      fileController: fileController
+    )
+    crashedProcessClient.record(trace: .mock(id: "before-crash-1"))
+    crashedProcessClient.record(trace: .mock(id: "before-crash-2"))
+    // No waitForUploads() call - the process is torn down here.
+
+    // Simulates the relaunched process picking up the same file.
+    let relaunchedProcessClient = UploadClient.live(
+      api: api,
+      runEnvironment: EnvironmentValues().runEnvironment(),
+      fileController: fileController
+    )
+    relaunchedProcessClient.record(trace: .mock(id: "after-relaunch"))
+    relaunchedProcessClient.waitForUploads()
+
+    XCTAssertEqual(testResults.count, 1)
+    XCTAssertEqual(testResults[0].data.map(\.id), ["before-crash-1", "before-crash-2", "after-relaunch"])
+  }
+
+  func testSuccessfulUploadDeletesTheLocalFile() throws {
+    let api = ApiClient { _ in (Data(), .stub(status: 202)) }
+    let fileController = FileController.temporary()
 
     let uploadClient = UploadClient.live(
       api: api,
       runEnvironment: EnvironmentValues().runEnvironment(),
-      batchSize: 1,
-      group: uploadTasks
+      fileController: fileController
     )
 
-    // Record many traces back-to-back; each one should trigger its own upload immediately, rather than
-    // waiting for a full batch or for waitForUploads() to be called.
-    for id in 1...50 {
-      uploadClient.record(trace: .mock(id: "\(id)"))
-    }
-
-    XCTAssertEqual(uploadTasks.wait(timeout: 0.5), .success)
-    XCTAssertEqual(testResults.count, 50)
-
-    // waitForUploads() should have nothing left to flush, but must still correctly wait for every one of
-    // the many concurrent upload tasks already in flight.
+    uploadClient.record(trace: .mock())
     uploadClient.waitForUploads()
 
-    XCTAssertEqual(testResults.count, 50)
-    XCTAssertEqual(
-      Set(testResults.value.flatMap { $0.data.map(\.id) }),
-      Set((1...50).map { "\($0)" })
+    XCTAssertEqual(fileController.readAll(), [])
+  }
+
+  func testFailedUploadLeavesTheLocalFileInPlace() throws {
+    let api = ApiClient { _ in (Data(), .stub(status: 500)) }
+    let fileController = FileController.temporary()
+
+    let uploadClient = UploadClient.live(
+      api: api,
+      runEnvironment: EnvironmentValues().runEnvironment(),
+      logger: Logger(logLevel: .error) { _ in },
+      fileController: fileController
     )
+
+    uploadClient.record(trace: .mock(id: "not-lost"))
+    uploadClient.waitForUploads()
+
+    XCTAssertEqual(fileController.readAll().map(\.id), ["not-lost"])
   }
 
   func testUploadIncludesTags() throws {
@@ -161,7 +196,8 @@ final class UploadClientTests: XCTestCase {
     let uploadClient = UploadClient.live(
       api: api,
       runEnvironment: EnvironmentValues().runEnvironment(),
-      tags: ["host.arch": "arm64", "cloud.region": "us-east-1"]
+      tags: ["host.arch": "arm64", "cloud.region": "us-east-1"],
+      fileController: .temporary()
     )
 
     uploadClient.record(trace: .mock())
@@ -175,5 +211,14 @@ final class UploadClientTests: XCTestCase {
 extension Trace {
   fileprivate static func mock(id: String = "id") -> Self {
     Trace(id: id, history: .init(section: "stub"))
+  }
+}
+
+extension FileController {
+  /// A file controller pointed at a unique temporary file, so tests don't collide with each other or
+  /// with the shared default path a real run would use.
+  fileprivate static func temporary() -> FileController {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).ndjson")
+    return FileController(fileURL: url)
   }
 }

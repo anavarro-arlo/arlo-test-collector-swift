@@ -1,6 +1,6 @@
 extension Trace {
   /// The result for the test associated with a trace.
-  enum Result: String, Encodable, Equatable {
+  enum Result: String, Codable, Equatable {
     case passed
     case failed
     case skipped

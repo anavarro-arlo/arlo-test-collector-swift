@@ -2,14 +2,22 @@
 
 ## 0.6.1
 
-- Fix data loss when the test process is torn down mid-suite: `TestCollector` now uploads after every
-  finished test by default instead of buffering until `waitForUploads()` runs at `testBundleDidFinish`.
-  Batch size is configurable via the new `BUILDKITE_ANALYTICS_BATCH_SIZE` environment variable if larger,
-  less frequent uploads are preferred.
-- Considered writing results to local disk (see the abandoned `tech/local-result-storage` branch) as a
-  more complete fix, but that branch only persists to disk as a fallback when no API token is configured
-  and never re-uploads those files on a later run — it isn't actually crash-safe as committed, and making
-  it so is a larger effort than this fix. Deferred; see upstream issue #49.
+- Fix data loss when the test process is torn down mid-suite (e.g. `xcodebuild` relaunching the Runner
+  process after certain failures): traces are now persisted to a local, append-only file as each test
+  finishes, rather than only held in memory until `waitForUploads()` runs at `testBundleDidFinish`. A
+  process relaunched mid-run appends to the same file instead of starting from an empty buffer, so at
+  most the single test that was in flight when the process died is lost — not everything recorded since
+  the last upload. Uploads still happen exactly once, at the end of the run, from the file's full
+  contents, so this doesn't change upload request volume or frequency.
+- An earlier version of this fix uploaded after every individual test instead. That was reverted: it
+  multiplied upload request volume (one HTTP request per test instead of one per run), and Buildkite's
+  Analytics REST API enforces an organization-wide rate limit of 200 requests/minute shared across all
+  concurrent CI jobs — a real risk for suites split across many parallel jobs. Local persistence avoids
+  that risk entirely while still fixing the crash-loss bug.
+- Looked at the abandoned `tech/local-result-storage` branch for reference: it only persisted to disk as
+  a fallback when no API token was configured, and never re-read those files for upload, so it wasn't
+  actually crash-safe as committed. This fix always persists (regardless of token presence) and always
+  reads the file back at upload time.
 
 ## 0.6.0
 
