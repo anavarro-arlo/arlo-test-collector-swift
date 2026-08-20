@@ -7,8 +7,15 @@
   finishes, rather than only held in memory until `waitForUploads()` runs at `testBundleDidFinish`. A
   process relaunched mid-run appends to the same file instead of starting from an empty buffer, so at
   most the single test that was in flight when the process died is lost — not everything recorded since
-  the last upload. Uploads still happen exactly once, at the end of the run, from the file's full
-  contents, so this doesn't change upload request volume or frequency.
+  the last upload.
+- Restored the pre-fix behavior of uploading in batches of up to 5,000 traces (the Test Engine API's
+  per-upload limit) as they accumulate, rather than buffering everything until the end of the run - this
+  matters for large suites (e.g. 18k+ unit tests) that would otherwise fail to upload at all. The
+  in-memory count of traces recorded since the last upload is itself recomputed from the file (not
+  assumed to start at zero) whenever a client is constructed, so a process relaunched after a crash
+  resumes counting from what's actually on disk instead of losing track of the last batch boundary. Any
+  batch that was already stuck (accumulated but failed to upload, e.g. by a crash) is flushed immediately
+  on the next process's startup rather than waiting for another full batch to accumulate.
 - An earlier version of this fix uploaded after every individual test instead. That was reverted: it
   multiplied upload request volume (one HTTP request per test instead of one per run), and Buildkite's
   Analytics REST API enforces an organization-wide rate limit of 200 requests/minute shared across all

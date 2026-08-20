@@ -31,17 +31,41 @@ final class FileControllerTests: XCTestCase {
     XCTAssertEqual(FileController(fileURL: fileURL).readAll().map(\.id), ["1", "2"])
   }
 
-  func testDeleteFileRemovesAllTraces() {
+  func testCountReturnsZeroWhenFileDoesNotExist() {
     let controller = FileController(fileURL: self.temporaryFileURL())
-    controller.append(Trace(id: "1", history: .init(section: "stub")))
-
-    controller.deleteFile()
-
-    XCTAssertEqual(controller.readAll(), [])
+    XCTAssertEqual(controller.count(), 0)
   }
 
-  func testDeleteFileWhenFileDoesNotExistDoesNotThrow() {
+  func testCountReturnsNumberOfAppendedTraces() {
     let controller = FileController(fileURL: self.temporaryFileURL())
-    controller.deleteFile()
+    controller.append(Trace(id: "1", history: .init(section: "stub")))
+    controller.append(Trace(id: "2", history: .init(section: "stub")))
+    XCTAssertEqual(controller.count(), 2)
+  }
+
+  func testRemoveDeletesOnlySpecifiedTraces() {
+    let controller = FileController(fileURL: self.temporaryFileURL())
+    let traces = (1...3).map { Trace(id: "\($0)", history: .init(section: "stub")) }
+    traces.forEach(controller.append)
+
+    controller.remove([traces[1]])
+
+    XCTAssertEqual(controller.readAll().map(\.id), ["1", "3"])
+  }
+
+  func testRemovingEveryTraceDeletesTheFile() {
+    let controller = FileController(fileURL: self.temporaryFileURL())
+    let trace = Trace(id: "1", history: .init(section: "stub"))
+    controller.append(trace)
+
+    controller.remove([trace])
+
+    XCTAssertEqual(controller.readAll(), [])
+    XCTAssertEqual(controller.count(), 0)
+  }
+
+  func testRemoveWhenFileDoesNotExistDoesNotThrow() {
+    let controller = FileController(fileURL: self.temporaryFileURL())
+    controller.remove([Trace(id: "1", history: .init(section: "stub"))])
   }
 }

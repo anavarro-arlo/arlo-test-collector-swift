@@ -24,14 +24,27 @@ extension UploadClient {
     group: DispatchGroup = DispatchGroup(),
     fileController: FileController = FileController()
   ) -> UploadClient {
+    // Recomputed from the file rather than starting at zero, so a process relaunched after a crash
+    // resumes counting from what's actually on disk instead of losing track of the last upload
+    // threshold crossing.
+    let pendingCount = LockIsolated(fileController.count())
+
     let client = LiveClient(
       api: api,
       logger: logger,
       runEnvironment: runEnvironment,
       tags: tags,
       taskGroup: group,
-      fileController: fileController
+      fileController: fileController,
+      pendingCount: pendingCount
     )
+
+    // A previous process may have already reached a full batch but crashed (or failed to upload) before
+    // it could be removed from the file. Flush it now rather than waiting for the next threshold
+    // crossing, which a short remaining run might never reach.
+    if pendingCount.value >= maximumBatchSize {
+      client.flushPending()
+    }
 
     return UploadClient(
       record: { client.record(trace: $0) },
@@ -46,12 +59,35 @@ extension UploadClient {
     let tags: [String: String]?
     let taskGroup: DispatchGroup
     let fileController: FileController
+    let pendingCount: LockIsolated<Int>
 
     func record(trace: Trace) {
       // Persisted immediately so at most the currently in-flight test's result is lost if the process
       // is torn down before waitForUploads() runs. A process relaunched mid-suite (e.g. by xcodebuild)
       // appends to this same file rather than starting from an empty in-memory buffer.
       self.fileController.append(trace)
+
+      // Upload as soon as a full batch has accumulated, rather than waiting for the run to finish, so
+      // suites much larger than one upload's limit (see maximumBatchSize below) don't hold everything
+      // in the local file until the very end. Checked as "is this an exact multiple", not "has this
+      // been reached", so a batch that's already stuck (failed to upload) doesn't retrigger a flush
+      // attempt on every single subsequent test - only every time another full batch accumulates.
+      let crossedThreshold = self.pendingCount.withValue { count -> Bool in
+        count += 1
+        return count % maximumBatchSize == 0
+      }
+      if crossedThreshold {
+        self.flushPending()
+      }
+    }
+
+    /// Uploads everything currently in the file, in chunks no larger than the API's per-upload limit,
+    /// so runs of any size - not just ones comfortably under that limit - upload successfully.
+    func flushPending() {
+      let traces = self.fileController.readAll()
+      for batch in traces.chunked(into: maximumBatchSize) {
+        self.upload(traces: batch)
+      }
     }
 
     private func upload(traces: [Trace]) {
@@ -62,11 +98,14 @@ extension UploadClient {
         let testData = TestResults.json(runEnv: runEnvironment, tags: tags, data: traces)
         do {
           try await self.upload(testData: testData)
-          // Only clear the durable log once the upload actually succeeds, so a failed upload doesn't
-          // lose data - the file is left in place rather than silently discarded.
-          self.fileController.deleteFile()
+          // Only clear the durable log - and the count tracking it - once the upload actually
+          // succeeds, so a failed upload doesn't lose data or silently reset the flush threshold.
+          self.fileController.remove(traces)
+          self.pendingCount.withValue { $0 -= traces.count }
         } catch {
-          // Already logged inside upload(testData:).
+          // Already logged inside upload(testData:). Left in the file and still counted as pending,
+          // so it's picked up by the next threshold crossing, the next process's startup flush, or
+          // waitForUploads() at the latest.
         }
       }
     }
@@ -108,16 +147,25 @@ extension UploadClient {
     }
 
     func waitForUploads(timeout: TimeInterval) {
-      // Reads every trace recorded to the file, including any appended by a process that was torn down
-      // and relaunched earlier in this same run - not just the ones this process instance recorded.
-      let traces = self.fileController.readAll()
-      if !traces.isEmpty {
-        self.upload(traces: traces)
-      }
+      // Flushes everything still recorded in the file, including anything appended by a process that
+      // was torn down and relaunched earlier in this same run - not just what this instance recorded.
+      self.flushPending()
       let result = self.taskGroup.wait(timeout: timeout)
       if result == .timedOut {
         self.logger?.error("Upload client timed out before completing all uploads")
       }
+    }
+  }
+}
+
+// The maximum number of traces that can be sent per upload
+private let maximumBatchSize = 5000
+
+extension Array {
+  fileprivate func chunked(into size: Int) -> [[Element]] {
+    guard !self.isEmpty else { return [] }
+    return stride(from: 0, to: self.count, by: size).map {
+      Array(self[$0..<Swift.min($0 + size, self.count)])
     }
   }
 }
